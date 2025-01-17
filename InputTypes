@@ -1,0 +1,11 @@
+local inputTypes = {
+    Enum.UserInputType.MouseButton1,
+    Enum.UserInputType.MouseButton2,
+    Enum.UserInputType.MouseButton3,
+    Enum.UserInputType.Keyboard,
+    Enum.UserInputType.Touch,
+    Enum.UserInputType.Gamepad1,
+    Enum.UserInputType.Gamepad2,
+    Enum.UserInputType.Gamepad3,
+    Enum.UserInputType.Gamepad4
+}
