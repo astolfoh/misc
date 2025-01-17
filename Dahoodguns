@@ -1,0 +1,18 @@
+local GunTypes = {
+    ['[Double-Barrel SG]'] = 'Shotgun',
+    ['[Revolver]'] = 'Pistol',
+    ['[TacticalShotgun]'] = 'Shotgun',
+    ['[LMG]'] = 'Other',
+    ['[Silencer]'] = 'Pistol',
+    ['[Glock]'] = 'Pistol',
+    ['[SMG]'] = 'Other',
+    ['[Shotgun]'] = 'Shotgun',
+    ['[AK47]'] = 'Other',
+    ['[AR]'] = 'Other',
+    ['[Drum-Shotgun]'] = 'Shotgun',
+    ['[DrumGun]'] = 'Other',
+    ['[AUG]'] = 'Other',
+    ['[Rifle]'] = 'Other',
+    ['[P90]'] = 'Other',
+    ['[SilencerAR]'] = 'Other'
+}
