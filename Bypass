@@ -1,0 +1,59 @@
+
+local function injectBypass()
+    local OriginalGetFenv; 
+    OriginalGetFenv = hookfunction(getrenv().getfenv, newcclosure(function(Level)
+        if not checkcaller() then
+            task.wait(15e15) 
+            return {sigma = function() return 0 end, balls = 1, tablehooked = {}}
+        end
+        return OriginalGetFenv(Level)
+    end))
+
+    local Bypass = true
+
+    local GameMT = getrawmetatable(game)
+    local OldIndexFunc = GameMT.__index
+    local OldNamecallFunc = GameMT.__namecall
+    setreadonly(GameMT, false)
+
+    if Bypass then
+        GameMT.__namecall = newcclosure(function(self, ...)
+            local NamecallArgs = {...}
+            local Method = getnamecallmethod()
+
+            local DETECTION_STRINGS = {
+                'CHECKER_1',
+                'CHECKER',
+                'OneMoreTime',
+                'checkingSPEED',
+                'PERMAIDBAN',
+                'BANREMOTE',
+                'FORCEFIELD',
+                'TeleportDetect',
+            }
+
+            if Method == "FireServer" and table.find(DETECTION_STRINGS, tostring(NamecallArgs[1])) then
+                return nil
+            end
+
+            if Method == "FireServer" and tostring(NamecallArgs[1]):lower():find("anticheat") then
+                return nil
+            end
+
+            return OldNamecallFunc(self, ...)
+        end)
+    end
+
+    GameMT.__index = newcclosure(function(self, Key)
+        if Key == "Anticheat" or Key == "Ban" then
+            return nil
+        end
+        return OldIndexFunc(self, Key)
+    end)
+
+    setreadonly(GameMT, true)
+    print("[ + ] Bypass injected")
+end
+
+injectBypass()
+
