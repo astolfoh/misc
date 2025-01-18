@@ -264,7 +264,7 @@ end
         }
     
         local Texts = {
-            "user",
+            "vnlyvnlyvnly @v4f on discord",
         }
     
         local function ChangeText(Object, NewText) -- this is for the thing in the top-right in the ui what
@@ -347,7 +347,7 @@ end
         UI["a"]["BackgroundTransparency"] = 1
         UI["a"]["Size"] = UDim2New(0, 452, 0, 19)
         UI["a"]["BorderColor3"] = Color3FromRGB(0, 0, 0)
-        UI["a"]["Text"] = [[powered by astro.space]]
+        UI["a"]["Text"] = [[@ v4f on discord]]
         UI["a"]["Name"] = [[CreditTitle]]
         UI["a"]["Position"] = UDim2New(0, 96, 0, 428)
     
