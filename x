@@ -1,259 +1,669 @@
+--// Services
 local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local Camera = workspace.CurrentCamera
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+--// Variables
 local LocalPlayer = Players.LocalPlayer
-local userWantsCamlock = Vnlyisanigger['Camlock']['Enabled']
-local actualCamlockActive = false
-local currentTarget = nil
+local Mouse = LocalPlayer:GetMouse()
+local Camera = Workspace.CurrentCamera
 
-local function isInFirstPerson()
-    return (Camera.CFrame.Position - Camera.Focus.Position).Magnitude < 1
-end
+--// Optimizations
+local math_huge = math.huge
+local math_random = math.random
+local tick = tick
+local os_clock = os.clock
 
-local function toggleCamlock()
-    userWantsCamlock = not userWantsCamlock
-    Vnlyisanigger['Camlock']['Enabled'] = userWantsCamlock
-    if not userWantsCamlock then
-        currentTarget = nil
-    else
-        currentTarget = nil
-    end
-end
+--// Internal State
+local CurrentTarget = nil
+local Holding = false
+local ExpanderActive = false 
+local LastShotTime = 0
+local LastThrottleTime = 0
 
-UserInputService.InputBegan:Connect(function(i, p)
-    if p then return end
-    if i.KeyCode == Enum.KeyCode[Vnlyisanigger['Camlock']['Keybind']:upper()] then
-        toggleCamlock()
-    end
-end)
+--// Prebuilt Raycast Params
+local RayParams = RaycastParams.new()
+RayParams.FilterType = Enum.RaycastFilterType.Blacklist
+RayParams.FilterDescendantsInstances = {LocalPlayer.Character, Camera}
 
-local easingFunctions = {
-    Linear = function(a) return a end,
-    Sine = function(a) return 1 - math.cos((a * math.pi) / 2) end,
-    Quad = function(a) return a ^ 2 end,
-    Cubic = function(a) return a ^ 3 end,
-    Quart = function(a) return a ^ 4 end,
-    Quint = function(a) return a ^ 5 end,
-    Exponential = function(a) return (a == 0) and 0 or (2 ^ (10 * (a - 1))) end,
-    Circular = function(a) return 1 - math.sqrt(1 - a ^ 2) end,
-    Back = function(a) local s = 1.70158 return a ^ 2 * ((s + 1) * a - s) end,
-    Bounce = function(a)
-        if a < 1 / 2.75 then
-            return 7.5625 * a * a
-        elseif a < 2 / 2.75 then
-            a = a - 1.5 / 2.75
-            return 7.5625 * a * a + 0.75
-        elseif a < 2.5 / 2.75 then
-            a = a - 2.25 / 2.75
-            return 7.5625 * a * a + 0.9375
-        else
-            a = a - 2.625 / 2.75
-            return 7.5625 * a * a + 0.984375
-        end
-    end,
-    Elastic = function(a)
-        local p = 0.3
-        return -(2 ^ (10 * (a - 1))) * math.sin((a - 1 - p / 4) * (2 * math.pi) / p)
-    end
-}
+--// Wall Check
+local function WallCheck(part)
+    if not part then return false end
 
-local function applyEasing(alpha, style)
-    local f = easingFunctions[style.Name]
-    return f and f(alpha) or alpha
-end
-
-local function WallCheck(pos, ignore)
-    local o = Camera.CFrame.Position
-    local r = Ray.new(o, pos - o)
-    local h = workspace:FindPartOnRayWithIgnoreList(r, ignore)
-    return h == nil
-end
-
-local function isValidTarget(p)
-    if not p or p == LocalPlayer then return false end
-    local c = p.Character
-    if not c then return false end
-    local bp = false
-    for _, v in ipairs(c:GetDescendants()) do
-        if v:IsA("BasePart") then bp = true break end
-    end
-    if not bp then return false end
-    if Vnlyisanigger['Camlock']['CrewCheck'] then
-        local d = p:FindFirstChild("DataFolder")
-        local m = LocalPlayer:FindFirstChild("DataFolder")
-        if d and m then
-            local t = d:FindFirstChild("Information") and d.Information:FindFirstChild("Crew")
-            local l = m:FindFirstChild("Information") and m.Information:FindFirstChild("Crew")
-            if t and l and (t.Value == l.Value) then return false end
-        end
-    end
-    if Vnlyisanigger['Camlock']['KnockCheck'] then
-        local b = c:FindFirstChild("BodyEffects")
-        local k = b and b:FindFirstChild("K.O") and b["K.O"].Value
-        if k then return false end
-    end
-    if Vnlyisanigger['Camlock']['GrabbedCheck'] then
-        if c:FindFirstChild("GRABBING_CONSTRAINT") then return false end
-    end
-    if Vnlyisanigger['Camlock']['VisibleCheck'] then
-        local hrp = c:FindFirstChild("HumanoidRootPart")
-        local hd = c:FindFirstChild("Head")
-        local t = c:FindFirstChild("Torso")
-        local up = c:FindFirstChild("UpperTorso")
-        local cp = hrp or hd or up or t
-        if cp then
-            local _, s = Camera:WorldToViewportPoint(cp.Position)
-            if not s then return false end
-        end
-    end
-    if Vnlyisanigger['Camlock']['WallCheck'] then
-        local hrp = c:FindFirstChild("HumanoidRootPart")
-        local hd = c:FindFirstChild("Head")
-        local t = c:FindFirstChild("Torso")
-        local up = c:FindFirstChild("UpperTorso")
-        local cp = hrp or hd or up or t
-        if cp then
-            if not WallCheck(cp.Position, {LocalPlayer.Character, c}) then return false end
-        end
-    end
-    return true
-end
-
-local function GetClosestPointOnBox(part, ref)
-    local lp = part.CFrame:PointToObjectSpace(ref)
-    local hs = part.Size * 0.5
-    local cp = Vector3.new(
-        math.clamp(lp.X, -hs.X, hs.X),
-        math.clamp(lp.Y, -hs.Y, hs.Y),
-        math.clamp(lp.Z, -hs.Z, hs.Z)
+    local result = Workspace:Raycast(
+        Camera.CFrame.Position,
+        (part.Position - Camera.CFrame.Position).Unit * 1000,
+        RayParams
     )
-    return part.CFrame:PointToWorldSpace(cp)
+
+    return result and result.Instance and result.Instance:IsDescendantOf(part.Parent)
 end
 
-local function GetClosestPointOnSphere(part, ref)
-    local center = part.CFrame.Position
-    local r = part.Size.Magnitude * 0.5
-    local dir = (ref - center).Unit
-    return center + dir * math.min((ref - center).Magnitude, r)
-end
-
-local function GetIntersectionPoint(part, ref)
-    local o = Camera.CFrame.Position
-    local d = (ref - o).Unit * 5000
-    local r = Ray.new(o, d)
-    local hit = workspace:FindPartOnRayWithIgnoreList(r, {LocalPlayer.Character})
-    if hit and hit:IsDescendantOf(part.Parent) then
-        local p = hit.CFrame.Position
-        return p
+--// Perform Checks
+local function PerformChecks(player, character, isSelecting)
+    if not player or not character then
+        return false
     end
-    return part.CFrame.Position
-end
 
-local function getAdvancedClosestPoint(part, ref, mode)
-    if mode == "Box" then
-        return GetClosestPointOnBox(part, ref)
-    elseif mode == "Sphere" then
-        return GetClosestPointOnSphere(part, ref)
-    elseif mode == "Ray" then
-        return GetIntersectionPoint(part, ref)
-    else
-        return part.Position
+    local checks = isSelecting and Config['Main']['Checks']['Selecting'] or Config['Main']['Checks']['Target']
+    if not checks then
+        return false
     end
-end
 
-local function getClosestBodyPartAim(plr)
-    local c = plr and plr.Character
-    if not c then return nil end
-    if not Vnlyisanigger['Camlock']['ClosestPoint'] then
-        local up = c:FindFirstChild("UpperTorso") or c:FindFirstChild("Torso") or c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head")
-        return up and up.Position or nil
+    if checks['Knocked'] then
+        local bodyEffects = character:FindFirstChild("BodyEffects")
+        local ko = bodyEffects and bodyEffects:FindFirstChild("K.O")
+        if ko and ko.Value then
+            return false
+        end
     end
-    local mode = Vnlyisanigger['Camlock']['ClosestPointMode']
-    local mp = UserInputService:GetMouseLocation()
-    local cd = math.huge
-    local ba = nil
-    for _, p in ipairs(c:GetDescendants()) do
-        if p:IsA("BasePart") then
-            local sp, os = Camera:WorldToViewportPoint(p.Position)
-            if os then
-                local dx = mp.X - sp.X
-                local dy = mp.Y - sp.Y
-                local dist = math.sqrt(dx*dx + dy*dy)
-                if dist < cd then
-                    cd = dist
-                    ba = getAdvancedClosestPoint(p, Camera.CFrame.Position, mode)
+
+    if checks['SelfKnocked'] then
+        local selfCharacter = LocalPlayer.Character
+        local selfBodyEffects = selfCharacter and selfCharacter:FindFirstChild("BodyEffects")
+        local selfKo = selfBodyEffects and selfBodyEffects:FindFirstChild("K.O")
+        if selfKo and selfKo.Value then
+            return false
+        end
+    end
+
+    if checks['Visible'] then
+        local root = character:FindFirstChild("HumanoidRootPart")
+        if root and not WallCheck(root) then
+            return false
+        end
+    end
+
+    if checks['CrewCheck'] then
+        local localData = LocalPlayer:FindFirstChild("DataFolder")
+        local targetData = player:FindFirstChild("DataFolder")
+        if localData and targetData then
+            local localCrew = localData:FindFirstChild("Information") and localData.Information:FindFirstChild("Crew")
+            local targetCrew = targetData:FindFirstChild("Information") and targetData.Information:FindFirstChild("Crew")
+            if localCrew and targetCrew and localCrew.Value ~= "" and targetCrew.Value ~= "" then
+                if localCrew.Value == targetCrew.Value then
+                    return false
                 end
             end
         end
     end
-    return ba
+
+    return true
 end
 
-local function smoothLookAt(wp)
-    local cc = Camera.CFrame
-    local tc = CFrame.lookAt(cc.Position, wp)
-    local s = Vnlyisanigger['Camlock']['SmoothnessSettings']
-    local rm = math.clamp(s['Smoothness'], s['MinSmoothness'], s['MaxSmoothness'])
-    local ea = applyEasing(rm, Vnlyisanigger['Camlock']['EasingStyle'])
-    Camera.CFrame = cc:Lerp(tc, ea)
-end
+--// Target System
+local function GetClosestPlayer()
+    local closestPlayer = nil
+    local closestDistance = math_huge
+    local mousePos = Vector2.new(Mouse.X, Mouse.Y)
 
-local function camlockTarget(plr)
-    if not actualCamlockActive or not isValidTarget(plr) then return end
-    local aim = getClosestBodyPartAim(plr)
-    if aim then
-        smoothLookAt(aim)
-    end
-end
-
-local function getNewTargetFromMouse()
-    local mp = UserInputService:GetMouseLocation()
-    local bd = math.huge
-    local bp = nil
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if isValidTarget(plr) then
-            local c = plr.Character
-            if not c then continue end
-            local hrp = c:FindFirstChild("HumanoidRootPart")
-            local hd = c:FindFirstChild("Head")
-            local t = c:FindFirstChild("Torso")
-            local up = c:FindFirstChild("UpperTorso")
-            local cp = hrp or hd or up or t
-            if cp then
-                local sp, os = Camera:WorldToViewportPoint(cp.Position)
-                if os then
-                    local dx = mp.X - sp.X
-                    local dy = mp.Y - sp.Y
-                    local dist = math.sqrt(dx*dx + dy*dy)
-                    if dist < bd then
-                        bd = dist
-                        bp = plr
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local hrp = player.Character.HumanoidRootPart
+            local screenPoint, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+            if onScreen then
+                local playerPos = Vector2.new(screenPoint.X, screenPoint.Y)
+                local distance = (mousePos - playerPos).Magnitude
+                if distance < closestDistance then
+                    if PerformChecks(player, player.Character, true) then
+                        closestDistance = distance
+                        closestPlayer = player
                     end
                 end
             end
         end
     end
-    return bp
+
+    return closestPlayer
+end
+
+local function ValidateTarget()
+    if not CurrentTarget or not CurrentTarget.Character or not CurrentTarget.Character:FindFirstChild("HumanoidRootPart") then
+        return false
+    end
+
+    return PerformChecks(CurrentTarget, CurrentTarget.Character, false)
+end
+
+local function SelectTarget()
+    CurrentTarget = GetClosestPlayer()
+
+    if Config['Main']['Debug'] then
+        if CurrentTarget then
+            print("[Triggerbot] Targeted:", CurrentTarget.Name)
+        else
+            print("[Triggerbot] No valid target found. Press the key again.")
+        end
+    end
+
+    if not CurrentTarget then
+        Holding = false -- stop trying to fire when no target
+    end
+end
+
+local function UnselectTarget()
+    if Config['Main']['Debug'] and CurrentTarget then
+        print("[Triggerbot] Untargeted:", CurrentTarget.Name)
+    end
+    CurrentTarget = nil
+end
+
+--// Firing System
+local function FireTrigger()
+    local tool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
+    if tool and tool.Name == "[Knife]" then
+        return 
+    end
+
+    if Config['Main']['Debug'] then
+        print("[Triggerbot] Fired Shot")
+    end
+
+    if Config['Triggerbot']['Method'] == "MouseClick" then
+        mouse1press()
+        task.wait(0.005)
+        mouse1release()
+    elseif Config['Triggerbot']['Method'] == "VirtualInput" then
+        VirtualInputManager:SendMouseButtonEvent(Mouse.X, Mouse.Y, 0, true, game, 0)
+        task.wait(0.005)
+        VirtualInputManager:SendMouseButtonEvent(Mouse.X, Mouse.Y, 0, false, game, 0)
+    end
+end
+
+--// Throttle System
+local function IsThrottled()
+    local now = os_clock()
+    if now - LastThrottleTime >= 0.01 then 
+        LastThrottleTime = now
+        return false
+    end
+    return true
+end
+
+--// Delay System
+local function CanShoot()
+    if not Config['Triggerbot']['Delay']['Enabled'] then
+        return true
+    end
+
+    local now = tick()
+    local min = Config['Triggerbot']['Delay']['Min']
+    local max = Config['Triggerbot']['Delay']['Max']
+    local delay = math_random() * (max - min) + min
+
+    if now - LastShotTime >= delay then
+        LastShotTime = now
+        return true
+    end
+
+    return false
+end
+
+--// Main Triggerbot Logic
+       RunService.RenderStepped:Connect(function()
+    if not Config['Main']['Enabled'] or not Config['Triggerbot']['Enabled'] then
+        return
+    end
+
+    if not Holding then
+        return
+    end
+
+    if IsThrottled() then
+        return
+    end
+
+    if not CurrentTarget then
+        return
+    end
+
+    if not ValidateTarget() then
+        UnselectTarget()
+        return
+    end
+
+    local targetPart = Mouse.Target
+
+    if Config['Main']['TargetMode'] then
+        if CurrentTarget and CurrentTarget.Character and CurrentTarget.Character:FindFirstChild("HumanoidRootPart") then
+            if Mouse.Target and Mouse.Target:IsDescendantOf(CurrentTarget.Character) then
+                if CanShoot() then
+                    FireTrigger()
+                end
+            end
+        end
+    else
+        if targetPart then
+            local player = Players:GetPlayerFromCharacter(targetPart:FindFirstAncestorOfClass("Model"))
+            if player and player ~= LocalPlayer and PerformChecks(player, player.Character, false) then
+                if CanShoot() then
+                    FireTrigger()
+                end
+            end
+        end
+    end
+end)
+
+--// Camlock State
+local CamlockHolding = false
+local CamlockEnabled = false
+local CamlockLockedTarget = nil
+
+--// Camlock Apply Smooth
+local function ApplyCamlockSmoothing(targetPos)
+    local mode = Config['Camlock']['Smoothness']['Mode']
+    local smoothX = Config['Camlock']['Smoothness']['X']
+    local smoothY = Config['Camlock']['Smoothness']['Y']
+
+    local camPos = Camera.CFrame.Position
+    local direction = (targetPos - camPos).Unit
+    local currentLook = Camera.CFrame.LookVector
+
+    if mode == "None" then
+        local blended = Vector3.new(
+            currentLook.X + (direction.X - currentLook.X) * smoothX,
+            currentLook.Y + (direction.Y - currentLook.Y) * smoothY,
+            currentLook.Z + (direction.Z - currentLook.Z) * ((smoothX + smoothY) / 2)
+        ).Unit
+        return CFrame.new(camPos, camPos + blended)
+    else
+        local blended = currentLook:Lerp(direction, (smoothX + smoothY) / 2)
+        return CFrame.new(camPos, camPos + blended)
+    end
+end
+
+--// Camlock Main Logic
+RunService.RenderStepped:Connect(function()
+    if not Config['Main']['Enabled'] or not Config['Camlock']['Enabled'] then
+        return
+    end
+
+    local bindMode = Config['Main']['BindMode']
+    local active = (bindMode == "Hold" and CamlockHolding) or (bindMode == "Toggle" and CamlockEnabled)
+    if not active then
+        return
+    end
+
+    if not CurrentTarget then
+        return
+    end
+
+    if not ValidateTarget() then
+        UnselectTarget()
+        return
+    end
+
+    local character = CurrentTarget and CurrentTarget.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then
+        UnselectTarget()
+        return
+    end
+
+    if not PerformChecks(CurrentTarget, character, false) then
+        UnselectTarget()
+        return
+    end
+
+    local isFirstPerson = (Camera.Focus.Position - Camera.CFrame.Position).Magnitude < 1
+    if isFirstPerson and not Config['Camlock']['Toggle']['FirstPerson'] then
+        return
+    end
+    if not isFirstPerson and not Config['Camlock']['Toggle']['ThirdPerson'] then
+        return
+    end
+
+    local hitPart = character:FindFirstChild(Config['Camlock']['HitPart'])
+    if not hitPart then
+        return
+    end
+
+    Camera.CFrame = ApplyCamlockSmoothing(hitPart.Position)
+end)
+
+--// Hitbox Expander
+
+local HitboxAdornment = nil
+
+local function CreateAdornment(part)
+    local adornment = Instance.new("BoxHandleAdornment")
+    adornment.Name = "HitboxAdornment"
+    adornment.Adornee = part
+    adornment.AlwaysOnTop = true
+    adornment.ZIndex = 5
+    adornment.Size = part.Size
+    adornment.Color3 = Color3.new(1, 1, 1) -- Grey
+    adornment.Transparency = 0.5
+    adornment.Parent = part
+    return adornment
 end
 
 RunService.RenderStepped:Connect(function()
-    if Vnlyisanigger['Camlock']['FirstPersonOnly'] then
-        if isInFirstPerson() then
-            actualCamlockActive = userWantsCamlock
-        else
-            actualCamlockActive = false
+    if not Config['Main']['Enabled'] or not Config['HitboxExpander']['Enabled'] then
+        if HitboxAdornment then
+            HitboxAdornment:Destroy()
+            HitboxAdornment = nil
+        end
+        return
+    end
+
+    if not ExpanderActive then
+        if HitboxAdornment then
+            HitboxAdornment:Destroy()
+            HitboxAdornment = nil
+        end
+
+        -- Restore ALL players to default
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                local hrp = player.Character.HumanoidRootPart
+                hrp.Size = Vector3.new(2, 2, 1)
+                hrp.Transparency = 1
+                hrp.Material = Enum.Material.Plastic
+            end
+        end
+
+        return
+    end
+
+    if Config['Main']['TargetMode'] then
+        if CurrentTarget and CurrentTarget.Character and CurrentTarget.Character:FindFirstChild("HumanoidRootPart") then
+            local hrp = CurrentTarget.Character.HumanoidRootPart
+
+            hrp.Size = Vector3.new(
+                Config['HitboxExpander']['Size']['X'],
+                Config['HitboxExpander']['Size']['Y'],
+                Config['HitboxExpander']['Size']['Z']
+            )
+
+            if Config['HitboxExpander']['Visible'] then
+                hrp.Transparency = 1 -- Visible box
+                if not HitboxAdornment then
+                    HitboxAdornment = CreateAdornment(hrp)
+                end
+                HitboxAdornment.Adornee = hrp
+                HitboxAdornment.Size = hrp.Size
+            else
+                hrp.Transparency = 1 -- Fully invisible HRP
+                if HitboxAdornment then
+                    HitboxAdornment:Destroy()
+                    HitboxAdornment = nil
+                end
+            end
         end
     else
-        actualCamlockActive = userWantsCamlock
-    end
-    if not actualCamlockActive then return end
-    if (not currentTarget) or (not isValidTarget(currentTarget)) then
-        if not Vnlyisanigger['Camlock']['StickyAim'] or not currentTarget then
-            currentTarget = getNewTargetFromMouse()
+        -- Free Aim Mode
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                local hrp = player.Character.HumanoidRootPart
+                hrp.Size = Vector3.new(
+                    Config['HitboxExpander']['Size']['X'],
+                    Config['HitboxExpander']['Size']['Y'],
+                    Config['HitboxExpander']['Size']['Z']
+                )
+                hrp.Transparency = Config['HitboxExpander']['Visible'] and 0 or 1
+            end
         end
     end
-    if currentTarget then
-        camlockTarget(currentTarget)
+end)
+
+    --// Spread Modifier Hook
+local function GetWeaponSpreadReduction(weaponName)
+    if not Config['SpreadModifier']['Enabled'] then
+        return 0
+    end
+    local spreadSettings = Config['SpreadModifier']['Weapons']
+    return spreadSettings[weaponName] and (spreadSettings[weaponName]['Multiplier'] * 100) or 0
+end
+
+local OriginalRandom
+OriginalRandom = hookfunction(math.random, function(...)
+    -- Only intercept if spread modifier is enabled
+    if not Config['Main']['Enabled'] or not Config['SpreadModifier']['Enabled'] then
+        return OriginalRandom(...)
+    end
+
+    -- Get the calling script directly from debug info
+    local info = debug.getinfo(2, "f")
+    if not info or not info.func then
+        return OriginalRandom(...)
+    end
+
+    local caller = getfenv(info.func).script
+    if not caller or not caller.Parent then
+        return OriginalRandom(...)
+    end
+
+    -- Check if caller weapon is registered
+    local weaponName = caller.Parent.Name
+    if Config['SpreadModifier']['Weapons'][weaponName] and select("#", ...) == 0 then
+        local reduction = GetWeaponSpreadReduction(weaponName)
+        return OriginalRandom(...) * (1 - (reduction / 100))
+    end
+
+    return OriginalRandom(...)
+end)
+
+--// Bind Handling
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode[Config['Main']['Bind']] then
+        if Config['Main']['BindMode'] == "Hold" then
+            Holding = true
+            CamlockHolding = true
+            Config['SpreadModifier']['Enabled'] = true
+            ExpanderActive = true
+
+            if Config['Main']['TargetMode'] and not CurrentTarget then
+                SelectTarget()
+            end
+
+        elseif Config['Main']['BindMode'] == "Toggle" then
+            Holding = not Holding
+            CamlockEnabled = not CamlockEnabled
+            Config['SpreadModifier']['Enabled'] = CamlockEnabled
+            ExpanderActive = CamlockEnabled
+
+            if Holding and Config['Main']['TargetMode'] and not CurrentTarget then
+                SelectTarget()
+            elseif not Holding then
+                UnselectTarget()
+            end
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode[Config['Main']['Bind']] then
+        if Config['Main']['BindMode'] == "Hold" then
+            Holding = false
+            CamlockHolding = false
+            Config['SpreadModifier']['Enabled'] = false
+            ExpanderActive = false
+            UnselectTarget()
+        end
+    end
+end)
+
+--- ESP
+
+
+--// ESP Internal Settings
+local ESPSettings = {
+    NameOffset = Vector3.new(0, 3, 0), -- Name above head
+    DistanceOffset = Vector3.new(0, -3, 0), -- Distance below feet
+    Font = 2, -- Plex font
+    Size = 13, -- Text size
+    TracerThickness = 1, -- Tracer line thickness
+    TracerFromMouse = true, -- true = From mouse, false = From bottom center
+    TracerOffset = Vector2.new(0, 60),
+}
+
+--// ESP Folder
+local ESPFolder = Instance.new("Folder")
+ESPFolder.Name = "ESPFolder"
+ESPFolder.Parent = game:GetService("CoreGui")
+
+local ESPObjects = {}
+local ESPEnabled = Config['ESP']['Main']['Enabled']
+
+--// ESP Checks
+local function ESPChecks(player, character)
+    local checks = Config['ESP']['Main']['Checks']['Players']
+    if not checks then
+        return false
+    end
+
+    if checks['Knocked'] then
+        local bodyEffects = character:FindFirstChild("BodyEffects")
+        local ko = bodyEffects and bodyEffects:FindFirstChild("K.O")
+        if ko and ko.Value then
+            return false
+        end
+    end
+
+    if checks['CrewCheck'] then
+        local localData = LocalPlayer:FindFirstChild("DataFolder")
+        local targetData = player:FindFirstChild("DataFolder")
+        if localData and targetData then
+            local localCrew = localData:FindFirstChild("Information") and localData.Information:FindFirstChild("Crew")
+            local targetCrew = targetData:FindFirstChild("Information") and targetData.Information:FindFirstChild("Crew")
+            if localCrew and targetCrew and localCrew.Value ~= "" and targetCrew.Value ~= "" then
+                if localCrew.Value == targetCrew.Value then
+                    return false
+                end
+            end
+        end
+    end
+
+    return true
+end
+
+--// ESP Create
+local function CreateESPObject(player)
+    if ESPObjects[player] then
+        ESPObjects[player]['NameLabel']:Destroy()
+        ESPObjects[player]['DistanceLabel']:Destroy()
+        ESPObjects[player]['Tracer']:Destroy()
+    end
+
+    local nameLabel = Drawing.new("Text")
+    nameLabel.Size = ESPSettings.Size
+    nameLabel.Font = ESPSettings.Font
+    nameLabel.Outline = true
+    nameLabel.Center = true
+    nameLabel.Color = Color3.new(1, 1, 1)
+    nameLabel.Visible = false
+
+    local distanceLabel = Drawing.new("Text")
+    distanceLabel.Size = ESPSettings.Size
+    distanceLabel.Font = ESPSettings.Font
+    distanceLabel.Outline = true
+    distanceLabel.Center = true
+    distanceLabel.Color = Color3.new(1, 1, 1)
+    distanceLabel.Visible = false
+
+    local tracer = Drawing.new("Line")
+    tracer.Thickness = ESPSettings.TracerThickness
+    tracer.Color = Color3.new(1, 1, 1)
+    tracer.Visible = false
+
+    ESPObjects[player] = {
+        ['NameLabel'] = nameLabel,
+        ['DistanceLabel'] = distanceLabel,
+        ['Tracer'] = tracer,
+    }
+end
+
+--// ESP Remove
+local function RemoveESPObject(player)
+    if ESPObjects[player] then
+        ESPObjects[player]['NameLabel']:Destroy()
+        ESPObjects[player]['DistanceLabel']:Destroy()
+        ESPObjects[player]['Tracer']:Destroy()
+        ESPObjects[player] = nil
+    end
+end
+
+Players.PlayerRemoving:Connect(function(player)
+    RemoveESPObject(player)
+end)
+
+--// ESP Keybind Toggle
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode[Config['ESP']['Main']['Bind']] then
+        ESPEnabled = not ESPEnabled
+    end
+end)
+
+--// ESP Render Update
+RunService.RenderStepped:Connect(function()
+    if not ESPEnabled then
+        for _, objects in pairs(ESPObjects) do
+            objects['NameLabel'].Visible = false
+            objects['DistanceLabel'].Visible = false
+            objects['Tracer'].Visible = false
+        end
+        return
+    end
+
+    local rawMousePos = Vector2.new(Mouse.X, Mouse.Y)
+    local mousePos = rawMousePos + ESPSettings.TracerOffset
+    local bottomCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            if not ESPObjects[player] then
+                CreateESPObject(player)
+            end
+
+            local objects = ESPObjects[player]
+            local character = player.Character
+            local root = character.HumanoidRootPart
+
+            local screenPos, onScreen = Camera:WorldToViewportPoint(root.Position)
+            local nameWorldPos = root.Position + ESPSettings.NameOffset
+            local distanceWorldPos = root.Position + ESPSettings.DistanceOffset
+
+            local nameScreenPos, nameOnScreen = Camera:WorldToViewportPoint(nameWorldPos)
+            local distanceScreenPos, distanceOnScreen = Camera:WorldToViewportPoint(distanceWorldPos)
+
+            if onScreen and ESPChecks(player, character) then
+                local distance = (Camera.CFrame.Position - root.Position).Magnitude
+
+                if Config['ESP']['Visuals']['Name'] then
+                    objects['NameLabel'].Position = Vector2.new(nameScreenPos.X, nameScreenPos.Y)
+                    objects['NameLabel'].Text = player.Name
+                    objects['NameLabel'].Visible = nameOnScreen
+                else
+                    objects['NameLabel'].Visible = false
+                end
+
+                if Config['ESP']['Visuals']['Distance'] then
+                    objects['DistanceLabel'].Position = Vector2.new(distanceScreenPos.X, distanceScreenPos.Y)
+                    objects['DistanceLabel'].Text = string.format("%.0f studs", distance)
+                    objects['DistanceLabel'].Visible = distanceOnScreen
+                else
+                    objects['DistanceLabel'].Visible = false
+                end
+
+                if Config['ESP']['Visuals']['Tracers'] then
+                    objects['Tracer'].From = ESPSettings.TracerFromMouse and mousePos or bottomCenter
+                    objects['Tracer'].To = Vector2.new(screenPos.X, screenPos.Y)
+                    objects['Tracer'].Visible = true
+                else
+                    objects['Tracer'].Visible = false
+                end
+            else
+                objects['NameLabel'].Visible = false
+                objects['DistanceLabel'].Visible = false
+                objects['Tracer'].Visible = false
+            end
+        elseif ESPObjects[player] then
+            RemoveESPObject(player)
+        end
     end
 end)
